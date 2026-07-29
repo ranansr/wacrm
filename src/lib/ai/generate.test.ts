@@ -43,6 +43,7 @@ describe('parseGeneration', () => {
     expect(parseGeneration('Hello there')).toEqual({
       text: 'Hello there',
       handoff: false,
+      imageUrl: null,
       usage: null,
     })
   })
@@ -51,11 +52,13 @@ describe('parseGeneration', () => {
     expect(parseGeneration('[[HANDOFF]]')).toEqual({
       text: '',
       handoff: true,
+      imageUrl: null,
       usage: null,
     })
     expect(parseGeneration('Let me get a human [[HANDOFF]]')).toEqual({
       text: 'Let me get a human',
       handoff: true,
+      imageUrl: null,
       usage: null,
     })
   })
@@ -65,8 +68,49 @@ describe('parseGeneration', () => {
     expect(parseGeneration('Hi', usage)).toEqual({
       text: 'Hi',
       handoff: false,
+      imageUrl: null,
       usage,
     })
+  })
+
+  it('captures + strips a send-image marker', () => {
+    expect(
+      parseGeneration(
+        'Here it is! [[SEND_IMAGE:https://cdn.example.com/dori.jpg]]',
+      ),
+    ).toEqual({
+      text: 'Here it is!',
+      handoff: false,
+      imageUrl: 'https://cdn.example.com/dori.jpg',
+      usage: null,
+    })
+  })
+
+  it('keeps a query string but drops punctuation swept into the marker', () => {
+    expect(
+      parseGeneration('Photo: [[SEND_IMAGE:https://x.test/a.jpg?v=99.]]').imageUrl,
+    ).toBe('https://x.test/a.jpg?v=99')
+  })
+
+  it('takes the first URL and strips every marker when the model emits several', () => {
+    const res = parseGeneration(
+      'One [[SEND_IMAGE:https://x.test/1.jpg]] two [[SEND_IMAGE:https://x.test/2.jpg]]',
+    )
+    expect(res.imageUrl).toBe('https://x.test/1.jpg')
+    expect(res.text).toBe('One  two')
+  })
+
+  it('strips the marker even with no text left, so it can never leak', () => {
+    const res = parseGeneration('[[SEND_IMAGE:https://x.test/a.jpg]]')
+    expect(res.text).toBe('')
+    expect(res.imageUrl).toBe('https://x.test/a.jpg')
+  })
+
+  it('ignores a non-http marker payload', () => {
+    const res = parseGeneration('Hi [[SEND_IMAGE:file:///etc/passwd]]')
+    expect(res.imageUrl).toBeNull()
+    // Left verbatim in the text — nothing matched, so nothing was stripped.
+    expect(res.text).toContain('[[SEND_IMAGE:')
   })
 })
 
@@ -89,6 +133,7 @@ describe('generateReply — OpenAI', () => {
     expect(res).toEqual({
       text: 'Sure — happy to help!',
       handoff: false,
+      imageUrl: null,
       usage: { promptTokens: 42, completionTokens: 8, totalTokens: 50 },
     })
     const [url, opts] = fetchMock.mock.calls[0]
@@ -148,6 +193,7 @@ describe('generateReply — Anthropic', () => {
     expect(res).toEqual({
       text: 'Hi there!',
       handoff: false,
+      imageUrl: null,
       usage: { promptTokens: 30, completionTokens: 6, totalTokens: 36 },
     })
     const [url, opts] = fetchMock.mock.calls[0]

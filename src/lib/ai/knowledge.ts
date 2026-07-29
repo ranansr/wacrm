@@ -73,6 +73,23 @@ export async function ingestDocument(
 }
 
 /**
+ * Guard for the `[[SEND_IMAGE:…]]` protocol: does this model-supplied URL
+ * actually appear in the excerpts retrieved for this turn?
+ *
+ * The URL comes out of model output, so it can't be trusted on its own —
+ * without this check a customer could talk the agent into pointing the
+ * business's WhatsApp number at any URL they chose. Requiring the URL to
+ * appear verbatim in the account's own knowledge base means only links a
+ * human put there can ever be sent.
+ *
+ * Shared by the auto-reply bot and the playground so the playground shows
+ * what a real customer would actually receive.
+ */
+export function isKnownImageUrl(knowledge: string[], url: string): boolean {
+  return knowledge.some((k) => k.includes(url))
+}
+
+/**
  * Retrieve up to `k` knowledge excerpts relevant to `queryText`.
  *
  * Semantic-primary when an embeddings key is configured (embed the

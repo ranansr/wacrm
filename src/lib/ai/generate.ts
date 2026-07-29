@@ -5,7 +5,7 @@ import {
   type ChatMessage,
   type GenerateResult,
 } from './types'
-import { HANDOFF_SENTINEL, aiRequestTimeoutMs } from './defaults'
+import { HANDOFF_SENTINEL, SEND_IMAGE_RE, aiRequestTimeoutMs } from './defaults'
 import { generateOpenAi } from './providers/openai'
 import { generateAnthropic } from './providers/anthropic'
 
@@ -52,17 +52,34 @@ export async function generateReply(args: GenerateArgs): Promise<GenerateResult>
 }
 
 /**
- * Split the raw model output into `{ text, handoff, usage }`. The
- * sentinel can appear alone or trailing a partial reply; either way we
- * treat the turn as a handoff and strip the marker from any remaining
- * text. `usage` is passed straight through (null when the provider
- * didn't report it).
+ * Split the raw model output into `{ text, handoff, imageUrl, usage }`.
+ * The sentinel can appear alone or trailing a partial reply; either way
+ * we treat the turn as a handoff and strip the marker from any remaining
+ * text. A `[[SEND_IMAGE:<url>]]` marker is captured the same way — first
+ * one wins — and stripped. `usage` is passed straight through (null when
+ * the provider didn't report it).
+ *
+ * Both markers are stripped unconditionally, for every caller: the draft
+ * route hands `text` straight back to the composer, so a marker the
+ * model emitted unprompted must never survive into user-visible text.
  */
 export function parseGeneration(
   raw: string,
   usage: AiUsage | null = null,
 ): GenerateResult {
   const handoff = raw.includes(HANDOFF_SENTINEL)
-  const text = raw.split(HANDOFF_SENTINEL).join('').trim()
-  return { text, handoff, usage }
+
+  // Trailing sentence punctuation is easy for a model to sweep into the
+  // marker; it would otherwise break the exact-match check the caller
+  // uses to verify the URL came from the knowledge base.
+  const imageUrl =
+    raw.match(SEND_IMAGE_RE)?.[1].replace(/[.,;:!?]+$/, '') ?? null
+
+  const text = raw
+    .split(HANDOFF_SENTINEL)
+    .join('')
+    .replace(new RegExp(SEND_IMAGE_RE.source, 'g'), '')
+    .trim()
+
+  return { text, handoff, imageUrl, usage }
 }

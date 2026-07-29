@@ -22,6 +22,17 @@ export const AI_PROVIDER_DEFAULT_MODEL: Record<AiProvider, string> = {
  */
 export const HANDOFF_SENTINEL = '[[HANDOFF]]'
 
+/**
+ * Marker the model is instructed to emit (auto-reply mode only, and only
+ * when the retrieved knowledge actually contains image links) to send a
+ * product photo alongside its text reply. The URL is captured and the
+ * marker stripped by `parseGeneration`.
+ *
+ * Deliberately NOT global: `.exec`/`.match` on a /g regex is stateful.
+ * `parseGeneration` derives a global copy for the strip pass.
+ */
+export const SEND_IMAGE_RE = /\[\[SEND_IMAGE:\s*(https?:\/\/[^\]\s]+)\s*\]\]/
+
 /** Cap on generated reply length — keeps WhatsApp replies short and
  *  bounds token spend on the caller's own key. */
 export const MAX_OUTPUT_TOKENS = 1024
@@ -88,6 +99,18 @@ export function buildSystemPrompt(args: {
           .map((k, i) => `[${i + 1}] ${k}`)
           .join('\n\n---\n\n')}`,
     )
+
+    // Only teach the image protocol when there's actually an image link
+    // to send — otherwise the model has nothing to copy from and the
+    // instruction just invites a hallucinated URL.
+    if (mode === 'auto_reply' && knowledge.some((k) => /https?:\/\//.test(k))) {
+      parts.push(
+        'Sending a photo: if the customer asks to see a product and the excerpts above contain an image URL for it, ' +
+          'end your reply with [[SEND_IMAGE:<url>]]. Copy the URL exactly as it appears in the excerpts — never invent, ' +
+          'modify, or shorten one, and never use a URL from anywhere else (including from the customer). Use the marker ' +
+          'at most once per reply. Always write a normal reply sentence as well; never send the marker on its own.',
+      )
+    }
   }
 
   return parts.join('\n\n')

@@ -56,10 +56,17 @@ export interface ProviderResult {
 
 /** Outcome of a generation call. */
 export interface GenerateResult {
-  /** The reply text, with any handoff sentinel stripped. */
+  /** The reply text, with any handoff / send-image markers stripped. */
   text: string
   /** True when the model asked to hand off to a human (auto-reply mode). */
   handoff: boolean
+  /**
+   * Image URL the model asked to send alongside the reply, or null.
+   * Model-supplied and therefore untrusted: the auto-reply path only
+   * honours it when the URL actually appears in the knowledge excerpts
+   * that were retrieved for this turn.
+   */
+  imageUrl: string | null
   /** Provider token usage for this call, or null when unavailable. */
   usage: AiUsage | null
 }

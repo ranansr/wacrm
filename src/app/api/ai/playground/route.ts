@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { loadAiConfig } from '@/lib/ai/config'
-import { retrieveKnowledge } from '@/lib/ai/knowledge'
+import { retrieveKnowledge, isKnownImageUrl } from '@/lib/ai/knowledge'
 import { generateReply } from '@/lib/ai/generate'
 import { buildSystemPrompt } from '@/lib/ai/defaults'
 import { latestUserMessage } from '@/lib/ai/query'
@@ -16,8 +16,9 @@ const MAX_TURNS = 20
  *
  * Test-chat with the account's agent WITHOUT touching WhatsApp. Runs the
  * exact same path the auto-reply bot uses — knowledge-base retrieval +
- * `auto_reply` system prompt + the configured provider — so what you see
- * here is what a real customer would get. Reads the config even when the
+ * `auto_reply` system prompt + the configured provider, including the
+ * same guard on which product photos may be sent — so what you see here
+ * is what a real customer would get. Reads the config even when the
  * master switch is off (requireActive:false) so you can try it before
  * going live. Stateless: the client sends the running transcript each turn.
  */
@@ -84,8 +85,28 @@ export async function POST(request: Request) {
       knowledge,
     })
 
-    const { text, handoff } = await generateReply({ config, systemPrompt, messages })
-    return NextResponse.json({ reply: text, handoff })
+    const { text, handoff, imageUrl } = await generateReply({
+      config,
+      systemPrompt,
+      messages,
+    })
+
+    // Mirror the live send path: the photo is only reported when the URL
+    // came from the knowledge base, so the playground shows a dropped
+    // URL as a dropped URL rather than implying a send that wouldn't
+    // happen. Nothing is sent to WhatsApp here — the client just renders
+    // the image the customer would have received.
+    const image = imageUrl && isKnownImageUrl(knowledge, imageUrl) ? imageUrl : null
+
+    return NextResponse.json({
+      reply: text,
+      handoff,
+      image_url: image,
+      // Distinguishes "the model asked for a photo we refused to send"
+      // from "the model never asked", so the playground can flag a
+      // knowledge-base link that isn't matching.
+      image_rejected: Boolean(imageUrl) && !image,
+    })
   } catch (err) {
     if (err instanceof AiError) {
       return NextResponse.json(

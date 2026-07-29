@@ -1,13 +1,13 @@
 import { supabaseAdmin } from './admin-client'
 import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
-import { retrieveKnowledge } from './knowledge'
+import { retrieveKnowledge, isKnownImageUrl } from './knowledge'
 import { generateReply } from './generate'
 import { buildSystemPrompt } from './defaults'
 import { buildHandoffSummary } from './handoff'
 import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
-import { engineSendText } from '@/lib/flows/meta-send'
+import { engineSendText, engineSendMedia } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 
 interface DispatchArgs {
@@ -112,7 +112,7 @@ export async function dispatchInboundToAiReply(
       knowledge,
     })
 
-    const { text, handoff, usage } = await generateReply({
+    const { text, handoff, imageUrl, usage } = await generateReply({
       config,
       systemPrompt,
       messages,
@@ -132,7 +132,10 @@ export async function dispatchInboundToAiReply(
       usage,
     })
 
-    if (handoff || !text) {
+    // An image with no accompanying text is still a real reply, so it
+    // doesn't count as "the model produced nothing" — only a genuinely
+    // empty turn falls through to handoff.
+    if (handoff || (!text && !imageUrl)) {
       // The model can't (or shouldn't) answer — stop auto-replying on
       // this thread and hand it to a human. We (a) pause the bot here
       // (sticky until re-enabled), (b) route the conversation to the
@@ -179,14 +182,46 @@ export async function dispatchInboundToAiReply(
     }
     if (claimed !== true) return // lost the per-conversation cap race
 
-    await engineSendText({
-      accountId,
-      userId: configOwnerUserId,
-      conversationId,
-      contactId,
-      text,
-      aiGenerated: true,
-    })
+    if (text) {
+      await engineSendText({
+        accountId,
+        userId: configOwnerUserId,
+        conversationId,
+        contactId,
+        text,
+        aiGenerated: true,
+      })
+    }
+
+    // Photo follow-up, sent as its own message rather than as a caption:
+    // captions are capped at 1024 characters while the reply is capped in
+    // tokens, so a long-but-valid reply would fail caption validation.
+    //
+    // The URL is model output, so it's only honoured when it came from
+    // the account's own knowledge base — see `isKnownImageUrl`.
+    if (imageUrl) {
+      if (!isKnownImageUrl(knowledge, imageUrl)) {
+        console.warn(
+          `[ai auto-reply] dropped an image URL that is not in the retrieved knowledge: ${imageUrl}`,
+        )
+      } else {
+        // Isolated: the text reply has already landed, and a media
+        // failure (dead link, wrong content type, Meta rejection) must
+        // not bubble up and make the caller think the whole reply failed.
+        try {
+          await engineSendMedia({
+            accountId,
+            userId: configOwnerUserId,
+            conversationId,
+            contactId,
+            kind: 'image',
+            link: imageUrl,
+          })
+        } catch (err) {
+          console.error('[ai auto-reply] image send failed:', err)
+        }
+      }
+    }
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
   }

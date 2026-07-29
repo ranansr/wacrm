@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   retrieveKnowledge: vi.fn(),
   generateReply: vi.fn(),
   engineSendText: vi.fn(),
+  engineSendMedia: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
@@ -19,9 +20,17 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./config', () => ({ loadAiConfig: h.loadAiConfig }))
 vi.mock('./context', () => ({ buildConversationContext: h.buildConversationContext }))
-vi.mock('./knowledge', () => ({ retrieveKnowledge: h.retrieveKnowledge }))
+// Only `retrieveKnowledge` is stubbed — `isKnownImageUrl` is kept real so
+// the image guard is exercised rather than mocked away.
+vi.mock('./knowledge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./knowledge')>()),
+  retrieveKnowledge: h.retrieveKnowledge,
+}))
 vi.mock('./generate', () => ({ generateReply: h.generateReply }))
-vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
+vi.mock('@/lib/flows/meta-send', () => ({
+  engineSendText: h.engineSendText,
+  engineSendMedia: h.engineSendMedia,
+}))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
@@ -94,8 +103,13 @@ beforeEach(() => {
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
   h.retrieveKnowledge.mockResolvedValue([])
-  h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false })
+  h.generateReply.mockResolvedValue({
+    text: 'Hello!',
+    handoff: false,
+    imageUrl: null,
+  })
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
+  h.engineSendMedia.mockResolvedValue({ whatsapp_message_id: 'm2' })
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {
@@ -186,9 +200,84 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
   })
 })
 
+describe('dispatchInboundToAiReply — image send', () => {
+  const PHOTO = 'https://cdn.example.com/dori.jpg'
+
+  function withPhotoInKnowledge() {
+    h.retrieveKnowledge.mockResolvedValue([`Dori fillet — photo: ${PHOTO}`])
+    h.generateReply.mockResolvedValue({
+      text: 'Here is our Dori fillet!',
+      handoff: false,
+      imageUrl: PHOTO,
+    })
+  }
+
+  it('sends the text reply, then the photo as a separate message', async () => {
+    withPhotoInKnowledge()
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'Here is our Dori fillet!' }),
+    )
+    expect(h.engineSendMedia).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        contactId: 'contact-1',
+        kind: 'image',
+        link: PHOTO,
+      }),
+    )
+    // One reply turn — the photo must not consume a second slot.
+    expect(h.state.rpcCalls).toHaveLength(1)
+  })
+
+  it('drops a URL that is not in the retrieved knowledge', async () => {
+    h.retrieveKnowledge.mockResolvedValue(['Dori fillet is in stock.'])
+    h.generateReply.mockResolvedValue({
+      text: 'Sure!',
+      handoff: false,
+      imageUrl: 'https://attacker.example/payload.jpg',
+    })
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.engineSendText).toHaveBeenCalled()
+    expect(h.engineSendMedia).not.toHaveBeenCalled()
+  })
+
+  it('still delivers the text reply when the photo send fails', async () => {
+    withPhotoInKnowledge()
+    h.engineSendMedia.mockRejectedValue(new Error('Meta rejected the media'))
+
+    // The failure is swallowed, so dispatch resolves normally.
+    await expect(dispatchInboundToAiReply(ARGS)).resolves.toBeUndefined()
+    expect(h.engineSendText).toHaveBeenCalled()
+  })
+
+  it('sends the photo alone rather than handing off when there is no text', async () => {
+    h.retrieveKnowledge.mockResolvedValue([`Dori fillet — photo: ${PHOTO}`])
+    h.generateReply.mockResolvedValue({ text: '', handoff: false, imageUrl: PHOTO })
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.engineSendMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ link: PHOTO }),
+    )
+    expect(h.state.updatePayload).toBeNull() // not treated as a handoff
+  })
+
+  it('does not send a photo on handoff', async () => {
+    h.retrieveKnowledge.mockResolvedValue([`Dori fillet — photo: ${PHOTO}`])
+    h.generateReply.mockResolvedValue({ text: '', handoff: true, imageUrl: PHOTO })
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.engineSendMedia).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+})
+
 describe('dispatchInboundToAiReply — handoff', () => {
   it('disables auto-reply, writes a summary, and does not send on handoff', async () => {
-    h.generateReply.mockResolvedValue({ text: '', handoff: true })
+    h.generateReply.mockResolvedValue({ text: '', handoff: true, imageUrl: null })
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).not.toHaveBeenCalled()
     expect(h.state.rpcCalls).toHaveLength(0)
@@ -202,7 +291,7 @@ describe('dispatchInboundToAiReply — handoff', () => {
 
   it('routes to the configured handoff agent on handoff', async () => {
     h.loadAiConfig.mockResolvedValue(aiConfig({ handoffAgentId: 'agent-7' }))
-    h.generateReply.mockResolvedValue({ text: '', handoff: true })
+    h.generateReply.mockResolvedValue({ text: '', handoff: true, imageUrl: null })
     await dispatchInboundToAiReply(ARGS)
     expect(h.state.updatePayload).toMatchObject({
       ai_autoreply_disabled: true,

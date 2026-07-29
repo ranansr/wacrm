@@ -2,7 +2,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Bot, RotateCcw, Send, Loader2, UserCircle2, ArrowRight } from 'lucide-react';
+import {
+  Bot,
+  RotateCcw,
+  Send,
+  Loader2,
+  UserCircle2,
+  ArrowRight,
+  ImageOff,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
@@ -11,6 +19,57 @@ interface Turn {
   content: string;
   /** assistant-only: the agent signalled a human handoff on this turn. */
   handoff?: boolean;
+  /** assistant-only: product photo the agent would send alongside the reply. */
+  imageUrl?: string | null;
+  /**
+   * assistant-only: the agent asked to send a photo, but the URL wasn't in
+   * the knowledge base so the live bot would drop it. Almost always a
+   * knowledge-base link the model paraphrased instead of copying.
+   */
+  imageRejected?: boolean;
+}
+
+/**
+ * The photo the agent would send, rendered from the same URL the live bot
+ * would hand to Meta. A load failure here is a real finding, not a cosmetic
+ * one: if the browser can't fetch it, Meta's servers can't either — so we
+ * say so rather than showing a silent broken-image icon.
+ */
+function PlaygroundPhoto({ url, spaced }: { url: string; spaced: boolean }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return (
+      <p
+        className={cn(
+          'flex items-start gap-1.5 text-xs text-red-400',
+          spaced && 'mt-2',
+        )}
+      >
+        <ImageOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>
+          Couldn&apos;t load this image, so WhatsApp wouldn&apos;t be able to
+          either. It has to be a direct, public link to a JPEG or PNG file.
+        </span>
+      </p>
+    );
+  }
+
+  // Plain <img>: the host is whatever the user put in their knowledge base,
+  // and next/image would need every such host in remotePatterns. Same choice
+  // as the inbox's own image bubble.
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt="Product photo the agent would send"
+      className={cn(
+        'max-h-64 max-w-full rounded-lg object-cover',
+        spaced && 'mt-2',
+      )}
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
@@ -61,6 +120,8 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
               ? data.reply
               : '',
           handoff: Boolean(data.handoff),
+          imageUrl: typeof data.image_url === 'string' ? data.image_url : null,
+          imageRejected: Boolean(data.image_rejected),
         },
       ]);
     } catch {
@@ -109,7 +170,7 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
             <p>Send a message to see how your agent would reply.</p>
             <p className="mt-1 text-xs">
               It uses your knowledge base and behaves exactly like the
-              auto-reply bot — including handoff.
+              auto-reply bot — including handoff and product photos.
             </p>
             {onGoToSetup && (
               <Button
@@ -144,6 +205,24 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
               )}
             >
               {t.content && <p className="whitespace-pre-wrap">{t.content}</p>}
+              {t.role === 'assistant' && t.imageUrl && (
+                <PlaygroundPhoto url={t.imageUrl} spaced={Boolean(t.content)} />
+              )}
+              {t.role === 'assistant' && t.imageRejected && (
+                <p
+                  className={cn(
+                    'flex items-start gap-1.5 text-xs text-amber-500',
+                    t.content && 'mt-1.5 border-t border-border/50 pt-1.5',
+                  )}
+                >
+                  <ImageOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Wanted to send a photo, but the link wasn&apos;t in your
+                    knowledge base — the live bot would skip it. Check the URL
+                    is written out in full in a knowledge base entry.
+                  </span>
+                </p>
+              )}
               {t.role === 'assistant' && t.handoff && (
                 <p
                   className={cn(

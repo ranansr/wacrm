@@ -7,7 +7,7 @@ vi.mock('./embeddings', () => ({
   toVectorLiteral: (v: number[]) => `[${v.join(',')}]`,
 }))
 
-import { retrieveKnowledge, ingestDocument } from './knowledge'
+import { retrieveKnowledge, ingestDocument, isKnownImageUrl } from './knowledge'
 
 interface FakeState {
   semantic: { id: string; content: string }[]
@@ -61,6 +61,32 @@ beforeEach(() => {
   h.embedTexts.mockImplementation(async (_key: string, inputs: string[]) =>
     inputs.map((_, i) => [i, i]),
   )
+})
+
+describe('isKnownImageUrl', () => {
+  const URL = 'https://cdn.example.com/dori.jpg'
+
+  it('accepts a URL embedded in an excerpt', () => {
+    expect(isKnownImageUrl([`Dori fillet — photo: ${URL}`], URL)).toBe(true)
+  })
+
+  it('rejects a URL from nowhere in the knowledge base', () => {
+    expect(
+      isKnownImageUrl(['Dori fillet is in stock.'], 'https://attacker.test/x.jpg'),
+    ).toBe(false)
+  })
+
+  it('rejects when there is no knowledge at all', () => {
+    expect(isKnownImageUrl([], URL)).toBe(false)
+  })
+
+  it('rejects a same-prefix URL pointing at a different host', () => {
+    // Substring matching is intentional (the URL sits inside prose), so pin
+    // that it still can't be fooled by a lookalike built off a real entry.
+    expect(
+      isKnownImageUrl([`photo: ${URL}`], 'https://cdn.example.com.evil.test/x.jpg'),
+    ).toBe(false)
+  })
 })
 
 describe('retrieveKnowledge', () => {

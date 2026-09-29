@@ -207,6 +207,24 @@ export async function sendMessageToConversation(
     );
   }
 
+  // Stage timings for the send path.
+  //
+  // When a send stalls long enough for the reverse proxy in front of the
+  // app to give up, the browser gets a bare 504 and the server logs show
+  // nothing at all — the handler is simply still awaiting when the
+  // connection is torn down, so no completion log ever runs. Emitting a
+  // line as each stage *finishes* means the last line printed before the
+  // silence names the stage that hung.
+  const startedAt = Date.now();
+  let stageAt = startedAt;
+  const mark = (stage: string) => {
+    const now = Date.now();
+    console.log(
+      `[send-message] ${messageType} ${stage} +${now - stageAt}ms (total ${now - startedAt}ms)`
+    );
+    stageAt = now;
+  };
+
   validateSendMessageParams({
     messageType,
     contentText,
@@ -224,6 +242,8 @@ export async function sendMessageToConversation(
     .eq('id', conversationId)
     .eq('account_id', accountId)
     .single();
+
+  mark('conversation-lookup');
 
   if (convError || !conversation) {
     throw new SendMessageError('not_found', 'Conversation not found', 404);
@@ -253,6 +273,8 @@ export async function sendMessageToConversation(
     .select('*')
     .eq('account_id', accountId)
     .single();
+
+  mark('config-lookup');
 
   if (configError || !config) {
     throw new SendMessageError(
@@ -327,6 +349,7 @@ export async function sendMessageToConversation(
       );
     }
     templateRow = data ?? null;
+    mark(templateRow ? 'template-row-lookup' : 'template-row-lookup (not found)');
   }
 
   const attempt = async (phone: string): Promise<string> => {
@@ -409,9 +432,11 @@ export async function sendMessageToConversation(
         waMessageId = await attempt(variant);
         workingPhone = variant;
         lastError = null;
+        mark('meta-send');
         break;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        mark('meta-send (failed)');
         if (!isRecipientNotAllowedError(message)) {
           throw err;
         }
@@ -511,6 +536,8 @@ export async function sendMessageToConversation(
       err instanceof Error ? err.message : err
     );
   }
+
+  mark('persist');
 
   return { messageId: messageRecord.id, whatsappMessageId: waMessageId };
 }

@@ -272,7 +272,12 @@ export function TemplateManager() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildSubmitPayload()),
       });
-      const data = await res.json();
+      // A gateway that times out or fails ahead of the app answers with
+      // an HTML error page, not JSON. Parsing that unguarded throws
+      // "Unexpected token '<'", which buries the status code the user
+      // actually needs. Fall back to an empty object and let the
+      // `!res.ok` branch below report the real status.
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(
           data?.error || `${isEdit ? 'Edit' : 'Submit'} failed (HTTP ${res.status})`,
@@ -306,7 +311,7 @@ export function TemplateManager() {
     setSyncing(true);
     try {
       const res = await fetch('/api/whatsapp/templates/sync', { method: 'POST' });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data?.error || `Sync failed (HTTP ${res.status})`);
       }

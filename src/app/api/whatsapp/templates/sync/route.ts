@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { metaFetch } from '@/lib/whatsapp/meta-api'
 import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
 import type { TemplateButton, TemplateSampleValues } from '@/types'
 
@@ -187,7 +188,10 @@ export async function POST() {
 
     while (nextUrl && pageCount < PAGE_CAP) {
       pageCount++
-      const metaRes: Response = await fetch(nextUrl, {
+      // Shared wrapper so a stalled Graph connection surfaces as a real
+      // error instead of hanging this paging loop until the platform's
+      // ingress returns a bodyless 504.
+      const metaRes: Response = await metaFetch(nextUrl, {
         headers: { Authorization: `Bearer ${accessToken}` },
       })
 

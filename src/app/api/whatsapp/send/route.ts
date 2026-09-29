@@ -21,6 +21,15 @@ import {
 // conversation, delegate, then map `SendMessageError` back onto the
 // dashboard's internal `{ error }` shape.
 export async function POST(request: Request) {
+  // Bookend the pre-send work so a stalled request is attributable from
+  // the logs alone. A proxy-level 504 tears the connection down without
+  // running any completion path, so absence of a line is the signal:
+  // no "received" at all means the request never reached Node; a
+  // "received" with no "authenticated" after it means the stall is in
+  // the Supabase auth round trip, upstream of anything Meta-related.
+  const routeStartedAt = Date.now()
+  console.log('[send-route] received')
+
   try {
     const supabase = await createClient()
 
@@ -28,6 +37,8 @@ export async function POST(request: Request) {
       data: { user },
       error: authError,
     } = await supabase.auth.getUser()
+
+    console.log(`[send-route] authenticated +${Date.now() - routeStartedAt}ms`)
 
     if (authError || !user) {
       return NextResponse.json(

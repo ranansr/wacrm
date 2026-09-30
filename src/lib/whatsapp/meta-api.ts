@@ -89,25 +89,17 @@ async function throwMetaError(response: Response, fallback: string): Promise<nev
 }
 
 /**
- * Default deadline for a Graph API round trip. Meta answers a send in
- * well under a second in practice; anything past this is a stalled
- * socket, not a slow reply.
- *
- * Deliberately a literal rather than an env lookup. A 5s deadline set
- * through `META_API_TIMEOUT_MS` failed to change the observed behaviour,
- * which left two indistinguishable explanations: the value never reached
- * the running bundle, or the gateway in front of the app gives up before
- * any deadline we set. Hardcoding removes the first from the picture, so
- * whatever happens next is attributable.
+ * Deadline for a Graph API round trip. Meta typically answers in well
+ * under two seconds; past this we assume a stalled socket rather than a
+ * slow reply. Generous enough not to cut off a legitimately slow call,
+ * short enough that a stall surfaces as a real error instead of hanging
+ * until the platform's gateway substitutes its own.
  */
-const META_TIMEOUT_MS = 3_000
+const META_TIMEOUT_MS = Number(process.env.META_API_TIMEOUT_MS) || 10_000
 
 /** Byte transfers (resumable upload, media download) get a longer leash. */
-const META_TRANSFER_TIMEOUT_MS = 60_000
-
-console.log(
-  `[meta] deadline ${META_TIMEOUT_MS}ms, transfer ${META_TRANSFER_TIMEOUT_MS}ms`,
-)
+const META_TRANSFER_TIMEOUT_MS =
+  Number(process.env.META_API_TRANSFER_TIMEOUT_MS) || 60_000
 
 /**
  * Strip credentials before a URL reaches the logs. The resumable-upload
@@ -150,23 +142,19 @@ export async function metaFetch(
   timeoutMs: number = META_TIMEOUT_MS,
 ): Promise<Response> {
   const startedAt = Date.now()
-  const label = `${init.method ?? 'GET'} ${redactUrl(url)}`
-  // Logged before and after so a request that never returns is visible
-  // as a "→" with no matching "←". That asymmetry is the whole point:
-  // a gateway timeout kills the connection without running any
-  // completion path, so only the entry line survives.
-  console.log(`[meta] → ${label} (deadline ${timeoutMs}ms)`)
   try {
-    const res = await fetch(url, {
+    return await fetch(url, {
       ...init,
       signal: AbortSignal.timeout(timeoutMs),
     })
-    console.log(`[meta] ← ${label} ${res.status} in ${Date.now() - startedAt}ms`)
-    return res
   } catch (err) {
     const elapsed = Date.now() - startedAt
-    console.log(
-      `[meta] ✗ ${label} threw after ${elapsed}ms: ${
+    // Failures only — a successful call logs nothing. This fires for
+    // timeouts and connection-level errors; a Graph call that answers
+    // with an error status is logged by `throwMetaError` instead, with
+    // Meta's own message and code.
+    console.error(
+      `[meta] ${init.method ?? 'GET'} ${redactUrl(url)} failed after ${elapsed}ms: ${
         err instanceof Error ? `${err.name}: ${err.message}` : String(err)
       }`,
     )

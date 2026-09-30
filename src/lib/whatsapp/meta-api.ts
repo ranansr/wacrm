@@ -27,15 +27,65 @@ interface MetaErrorResponse {
   error?: { message?: string; code?: number; type?: string }
 }
 
+/**
+ * A failed Graph API call, carrying enough context for a caller to pick
+ * the right status to hand its own client.
+ *
+ * The distinction that matters is whether Meta *answered*. A 400 saying
+ * "this template does not exist" is a definitive reply about a bad
+ * request — that is a client error, and surfacing it as `502 Bad Gateway`
+ * is both wrong and actively harmful: proxies commonly intercept upstream
+ * 5xx and replace the body with their own error page, so the one thing
+ * the user needs — Meta's message — never arrives. A timeout or a refused
+ * connection is the genuine bad-gateway case, and keeps 502.
+ */
+export class MetaApiError extends Error {
+  /** HTTP status Meta answered with; null when we never got a reply. */
+  readonly status: number | null
+  /** Meta's own numeric error code (e.g. 131030, 131058), when present. */
+  readonly code: number | null
+
+  constructor(
+    message: string,
+    opts: { status?: number | null; code?: number | null } = {},
+  ) {
+    super(message)
+    this.name = 'MetaApiError'
+    this.status = opts.status ?? null
+    this.code = opts.code ?? null
+  }
+
+  /** Meta replied with a definitive 4xx — the request was wrong. */
+  get isClientError(): boolean {
+    return this.status !== null && this.status >= 400 && this.status < 500
+  }
+}
+
+/**
+ * Map a failed Graph call onto the status this app should return.
+ * 422 when Meta rejected the request, 502 when Meta never answered.
+ */
+export function metaErrorStatus(err: unknown): number {
+  return err instanceof MetaApiError && err.isClientError ? 422 : 502
+}
+
 async function throwMetaError(response: Response, fallback: string): Promise<never> {
   let message = fallback
+  let code: number | null = null
   try {
     const data = (await response.json()) as MetaErrorResponse
     if (data.error?.message) message = data.error.message
+    if (typeof data.error?.code === 'number') code = data.error.code
   } catch {
     // response body wasn't JSON — keep the fallback
   }
-  throw new Error(message)
+  // Logged here rather than left to each caller: this is the one place
+  // every Graph failure passes through, and it is exactly the detail
+  // that went missing when a proxy swallowed the response body.
+  console.error(
+    `[meta] error ${response.status}${code !== null ? ` (code ${code})` : ''}: ${message}`,
+  )
+  throw new MetaApiError(message, { status: response.status, code })
 }
 
 /**
@@ -128,8 +178,10 @@ export async function metaFetch(
       }
     })()
 
+    // Both branches below leave `status` null: Meta never answered, so
+    // these are the genuine bad-gateway cases and stay 502.
     if (err instanceof Error && err.name === 'TimeoutError') {
-      throw new Error(
+      throw new MetaApiError(
         `Meta API did not respond within ${timeoutMs}ms (${host}). ` +
           `Check that this host can reach ${host} on port 443.`,
       )
@@ -143,7 +195,7 @@ export async function metaFetch(
           ? String(cause)
           : null
     const base = err instanceof Error ? err.message : String(err)
-    throw new Error(
+    throw new MetaApiError(
       `Could not reach Meta API (${host}) after ${elapsed}ms — ${base}` +
         (causeText ? ` (${causeText})` : ''),
     )

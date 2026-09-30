@@ -84,9 +84,23 @@ export async function providerHttpError(
 
   return new AiError(detail ? `${base}: ${detail}` : base, {
     code,
-    // Surface an auth failure as 401 so the settings "Test key" button
-    // can show "invalid key"; everything else is an upstream 502.
-    status: code === 'invalid_key' ? 401 : 502,
+    // The provider answered, so its verdict decides ours. An auth
+    // failure stays 401 so the settings "Test key" button can show
+    // "invalid key"; a rate limit passes 429 through; any other 4xx is
+    // a rejected request (422), not a bad gateway. Only a provider 5xx
+    // is a genuine upstream failure.
+    //
+    // Mislabelling a 4xx as 5xx is not cosmetic: proxies routinely
+    // intercept upstream 5xx and swap in their own error page, which
+    // discards the provider's message — the one useful part.
+    status:
+      code === 'invalid_key'
+        ? 401
+        : code === 'rate_limited'
+          ? 429
+          : status >= 400 && status < 500
+            ? 422
+            : 502,
   })
 }
 

@@ -27,6 +27,7 @@ import {
   sendMediaMessage,
   sendInteractiveButtons,
   sendInteractiveList,
+  metaErrorStatus,
   type MediaKind,
 } from '@/lib/whatsapp/meta-api';
 import {
@@ -452,7 +453,13 @@ export async function sendMessageToConversation(
     const message =
       err instanceof Error ? err.message : 'Unknown Meta API error';
     console.error('[send-message] Meta send failed for all variants:', message);
-    throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
+    // 422 when Meta rejected the request outright (a bad template, a
+    // recipient it won't accept); 502 only when it never answered.
+    throw new SendMessageError(
+      'meta_error',
+      `Meta API error: ${message}`,
+      metaErrorStatus(err)
+    );
   }
 
   if (workingPhone !== sanitizedPhone) {

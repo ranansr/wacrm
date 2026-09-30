@@ -2,7 +2,11 @@ import { NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { decrypt } from '@/lib/whatsapp/encryption'
-import { submitMessageTemplate } from '@/lib/whatsapp/meta-api'
+import {
+  submitMessageTemplate,
+  metaErrorStatus,
+  MetaApiError,
+} from '@/lib/whatsapp/meta-api'
 import {
   validateTemplatePayload,
   type TemplatePayload,
@@ -209,14 +213,19 @@ export async function POST(request: Request) {
             submissionError: message,
           }),
         )
-        const isRateLimit = /\b429\b/.test(message)
+        // Prefer the status Meta actually sent; the message regex stays
+        // as a fallback for errors raised before a response arrived.
+        const isRateLimit =
+          e instanceof MetaApiError && e.status !== null
+            ? e.status === 429
+            : /\b429\b/.test(message)
         return NextResponse.json(
           {
             error: isRateLimit
               ? 'Meta rate limit hit (100 template creates per hour). Try again later.'
               : message,
           },
-          { status: isRateLimit ? 429 : 502 },
+          { status: isRateLimit ? 429 : metaErrorStatus(e) },
         )
       }
     }

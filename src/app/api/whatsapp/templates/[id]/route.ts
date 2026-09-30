@@ -4,6 +4,8 @@ import { decrypt } from '@/lib/whatsapp/encryption'
 import {
   deleteMessageTemplate,
   editMessageTemplate,
+  metaErrorStatus,
+  MetaApiError,
 } from '@/lib/whatsapp/meta-api'
 import {
   validateTemplatePayload,
@@ -209,7 +211,10 @@ export async function PATCH(
             last_submitted_at: new Date().toISOString(),
           })
           .eq('id', id)
-        return NextResponse.json({ error: message }, { status: 502 })
+        return NextResponse.json(
+          { error: message },
+          { status: metaErrorStatus(e) },
+        )
       }
     }
 
@@ -341,7 +346,21 @@ export async function DELETE(
       } catch (e) {
         mark('meta-delete (failed)')
         const message = e instanceof Error ? e.message : 'Meta delete failed.'
-        return NextResponse.json({ error: message }, { status: 502 })
+        // A template Meta no longer has is the state we were trying to
+        // reach, so treat it as success and drop the local row. Without
+        // this, a row left behind by a template deleted on Meta's side
+        // (or by a WABA switch) can never be cleared from this UI —
+        // every attempt round-trips to Meta and fails the same way.
+        if (e instanceof MetaApiError && e.isClientError) {
+          console.warn(
+            `[templates] "${existing.name}" is already gone on Meta (${message}) — removing the local row.`,
+          )
+        } else {
+          return NextResponse.json(
+            { error: message },
+            { status: metaErrorStatus(e) },
+          )
+        }
       }
     }
 

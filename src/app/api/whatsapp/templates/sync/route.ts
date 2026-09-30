@@ -203,7 +203,12 @@ export async function POST() {
         } catch {
           // response wasn't JSON — keep the fallback
         }
-        return NextResponse.json({ error: metaErr }, { status: 502 })
+        // Meta answered, so a 4xx here is a client error, not a bad
+        // gateway — see MetaApiError for why that distinction matters.
+        return NextResponse.json(
+          { error: metaErr },
+          { status: metaRes.status >= 400 && metaRes.status < 500 ? 422 : 502 },
+        )
       }
 
       const metaBody: {

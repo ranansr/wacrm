@@ -42,12 +42,39 @@ async function throwMetaError(response: Response, fallback: string): Promise<nev
  * Default deadline for a Graph API round trip. Meta answers a send in
  * well under a second in practice; anything past this is a stalled
  * socket, not a slow reply.
+ *
+ * Deliberately a literal rather than an env lookup. A 5s deadline set
+ * through `META_API_TIMEOUT_MS` failed to change the observed behaviour,
+ * which left two indistinguishable explanations: the value never reached
+ * the running bundle, or the gateway in front of the app gives up before
+ * any deadline we set. Hardcoding removes the first from the picture, so
+ * whatever happens next is attributable.
  */
-const META_TIMEOUT_MS = Number(process.env.META_API_TIMEOUT_MS) || 15_000
+const META_TIMEOUT_MS = 3_000
 
 /** Byte transfers (resumable upload, media download) get a longer leash. */
-const META_TRANSFER_TIMEOUT_MS =
-  Number(process.env.META_API_TRANSFER_TIMEOUT_MS) || 60_000
+const META_TRANSFER_TIMEOUT_MS = 60_000
+
+console.log(
+  `[meta] deadline ${META_TIMEOUT_MS}ms, transfer ${META_TRANSFER_TIMEOUT_MS}ms`,
+)
+
+/**
+ * Strip credentials before a URL reaches the logs. The resumable-upload
+ * endpoint carries `access_token` in the query string, so logging a raw
+ * Graph URL would leak it.
+ */
+function redactUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    if (u.searchParams.has('access_token')) {
+      u.searchParams.set('access_token', 'REDACTED')
+    }
+    return `${u.pathname}${u.search}`
+  } catch {
+    return '<unparseable url>'
+  }
+}
 
 /**
  * Every Graph API request goes through here so it carries a deadline.
@@ -73,10 +100,26 @@ export async function metaFetch(
   timeoutMs: number = META_TIMEOUT_MS,
 ): Promise<Response> {
   const startedAt = Date.now()
+  const label = `${init.method ?? 'GET'} ${redactUrl(url)}`
+  // Logged before and after so a request that never returns is visible
+  // as a "→" with no matching "←". That asymmetry is the whole point:
+  // a gateway timeout kills the connection without running any
+  // completion path, so only the entry line survives.
+  console.log(`[meta] → ${label} (deadline ${timeoutMs}ms)`)
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+    const res = await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    console.log(`[meta] ← ${label} ${res.status} in ${Date.now() - startedAt}ms`)
+    return res
   } catch (err) {
     const elapsed = Date.now() - startedAt
+    console.log(
+      `[meta] ✗ ${label} threw after ${elapsed}ms: ${
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+      }`,
+    )
     const host = (() => {
       try {
         return new URL(url).host

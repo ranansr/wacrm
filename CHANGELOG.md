@@ -9,6 +9,50 @@ Versions follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0, `MINOR` bumps cover new modules; `PATCH` bumps cover bug fixes
 and polish.
 
+## [0.8.2] — 2026-09-30
+
+Fixes template send, edit and delete failing with an unexplained
+**HTTP 504** instead of telling you what WhatsApp actually said.
+
+### Fixed
+
+- **Template actions failing with "HTTP 504".** When Meta rejected a
+  request, the app replied `502` with Meta's explanation in the body —
+  but hosting platforms commonly intercept upstream `5xx` responses and
+  substitute their own error page, so the explanation never reached the
+  browser. You saw a bare gateway error (or, on the edit dialog,
+  `Unexpected token '<'`) with nothing to act on. Meta's rejections now
+  come back as `422`, which passes through untouched, so the real reason
+  is shown — for example `(#131058) Hello World templates can only be
+  sent from the Public Test Numbers`.
+- **Templates Meta no longer has could never be removed.** Deleting one
+  asked Meta to delete it first, Meta answered "not found", and the whole
+  delete failed — so the row was stuck in your list permanently. Deleting
+  a template Meta doesn't have now removes the local row, since that is
+  the intended end state. This clears out entries orphaned by a template
+  deleted from WhatsApp Manager, or by switching WABA.
+- **Requests to Meta now have a deadline** — 10 seconds, or 60 for media
+  uploads and downloads. A stalled connection previously left the request
+  hanging until the hosting platform gave up, producing the same
+  unexplained gateway error with nothing in the server logs. Override
+  with `META_API_TIMEOUT_MS` / `META_API_TRANSFER_TIMEOUT_MS`.
+- **Meta failures are now logged** with Meta's own message and error
+  code, so a rejection is diagnosable from the server logs rather than
+  only from the browser.
+
+### Changed
+
+- **API: a rejected request now returns `4xx`, not `502`.** When Meta or
+  an AI provider rejects a request, the API returns `422` — or `429` when
+  it is a rate limit. `502` now means only that the upstream never
+  answered: a timeout, or a host we could not reach. The error message in
+  the response body is unchanged.
+
+  This affects the public `POST /api/v1/messages` endpoint. **If an
+  integration treats `502` as "the request was rejected", it should
+  handle `422` and `429` as well.** Retry logic is the thing to check: a
+  `422` will fail identically on every retry, whereas a `502` may not.
+
 ## [0.8.1] — 2026-07-10
 
 Fixes inbound chats fragmenting into multiple threads for the same

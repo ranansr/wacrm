@@ -44,10 +44,32 @@ function isDryRun(): boolean {
   )
 }
 
+/**
+ * Stage timings, same shape as the send path.
+ *
+ * Both handlers here have been returning a bodyless 504 from the
+ * gateway, which means the handler never completed — so no summary line
+ * at the end would ever run. Each stage logs as it *finishes* instead,
+ * and the last line before the silence names the step that hung.
+ */
+function stageLogger(op: string) {
+  const startedAt = Date.now()
+  let stageAt = startedAt
+  return (stage: string) => {
+    const now = Date.now()
+    console.log(
+      `[templates] ${op} ${stage} +${now - stageAt}ms (total ${now - startedAt}ms)`,
+    )
+    stageAt = now
+  }
+}
+
 export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  const mark = stageLogger('PATCH')
+  console.log('[templates] PATCH received')
   try {
     const { id } = await context.params
     if (!UUID_RE.test(id)) {
@@ -64,6 +86,7 @@ export async function PATCH(
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+    mark('auth')
 
     // Resolve the caller's account_id so template + whatsapp_config
     // lookups work for teammates who didn't author the row.
@@ -72,6 +95,7 @@ export async function PATCH(
       .select('account_id')
       .eq('user_id', user.id)
       .maybeSingle()
+    mark('profile-lookup')
     const accountId = profile?.account_id as string | undefined
     if (!accountId) {
       return NextResponse.json(
@@ -95,6 +119,7 @@ export async function PATCH(
       .eq('id', id)
       .eq('account_id', accountId)
       .maybeSingle()
+    mark('template-lookup')
     if (lookupErr || !existing) {
       return NextResponse.json({ error: 'Template not found.' }, { status: 404 })
     }
@@ -149,13 +174,17 @@ export async function PATCH(
           { status: 400 },
         )
       }
+      mark('config-lookup')
       const accessToken = decrypt(config.access_token)
+      mark('decrypt')
 
       // Image headers need a fresh Resumable-Upload handle on every edit
       // (Meta replaces components wholesale). Derive from header_media_url.
       try {
         await ensureImageHeaderHandle(payload, accessToken)
+        mark('header-handle')
       } catch (e) {
+        mark('header-handle (failed)')
         return NextResponse.json(
           { error: e instanceof Error ? e.message : 'Header image upload failed.' },
           { status: 400 },
@@ -169,7 +198,9 @@ export async function PATCH(
           accessToken,
           components: metaPayload.components,
         })
+        mark('meta-edit')
       } catch (e) {
+        mark('meta-edit (failed)')
         const message = e instanceof Error ? e.message : 'Meta edit failed.'
         await supabase
           .from('message_templates')
@@ -203,6 +234,7 @@ export async function PATCH(
       .eq('id', id)
       .select()
       .single()
+    mark('local-update')
 
     if (updErr) {
       return NextResponse.json(
@@ -234,6 +266,8 @@ export async function DELETE(
   _request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  const mark = stageLogger('DELETE')
+  console.log('[templates] DELETE received')
   try {
     const { id } = await context.params
     if (!UUID_RE.test(id)) {
@@ -251,6 +285,8 @@ export async function DELETE(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    mark('auth')
+
     // Same account-scoping rationale as the PATCH handler above —
     // teammates need to be able to operate on shared templates +
     // the shared whatsapp_config.
@@ -259,6 +295,7 @@ export async function DELETE(
       .select('account_id')
       .eq('user_id', user.id)
       .maybeSingle()
+    mark('profile-lookup')
     const accountId = profile?.account_id as string | undefined
     if (!accountId) {
       return NextResponse.json(
@@ -273,6 +310,7 @@ export async function DELETE(
       .eq('id', id)
       .eq('account_id', accountId)
       .maybeSingle()
+    mark('template-lookup')
     if (lookupErr || !existing) {
       return NextResponse.json({ error: 'Template not found.' }, { status: 404 })
     }
@@ -289,7 +327,9 @@ export async function DELETE(
           { status: 400 },
         )
       }
+      mark('config-lookup')
       const accessToken = decrypt(config.access_token)
+      mark('decrypt')
       try {
         await deleteMessageTemplate({
           wabaId: config.waba_id,
@@ -297,7 +337,9 @@ export async function DELETE(
           name: existing.name,
           metaTemplateId: existing.meta_template_id,
         })
+        mark('meta-delete')
       } catch (e) {
+        mark('meta-delete (failed)')
         const message = e instanceof Error ? e.message : 'Meta delete failed.'
         return NextResponse.json({ error: message }, { status: 502 })
       }
@@ -307,6 +349,7 @@ export async function DELETE(
       .from('message_templates')
       .delete()
       .eq('id', id)
+    mark('local-delete')
     if (delErr) {
       return NextResponse.json(
         {
